@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#14181f">
+<title>Photo · xcoreworks</title>
+<style>
+:root{--bg:#14181f;--panel:#1d232d;--ink:#e9eef5;--muted:#94a3b8;--accent:#3fb6dc;--ok:#3ecf8e;--err:#ff6b6b}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:520px;margin:0 auto;padding:22px 16px 40px;display:flex;flex-direction:column;gap:14px;min-height:100dvh}
+h1{font-size:20px;margin:0;letter-spacing:.3px}
+.sess{font:13px ui-monospace,Consolas,monospace;color:var(--muted)}
+.big{display:flex;align-items:center;justify-content:center;gap:10px;width:100%;min-height:120px;border:0;border-radius:16px;background:var(--accent);color:#06222c;font-size:22px;font-weight:700;cursor:pointer}
+.big:active{transform:scale(.99)}
+.small{width:100%;padding:14px;border-radius:12px;border:1px solid #334155;background:var(--panel);color:var(--ink);font-size:16px;cursor:pointer}
+input[type=file]{display:none}
+.status{padding:12px 14px;border-radius:12px;background:var(--panel);min-height:48px}
+.status.ok{color:var(--ok)}.status.err{color:var(--err)}
+.prev{width:100%;border-radius:12px;display:none;background:#000}
+.list{font-size:13px;color:var(--muted);margin:0;padding-left:18px}
+.hint{font-size:13px;color:var(--muted)}
+</style>
+</head>
+<body>
+<main>
+  <h1>📷 P&amp;ID photo</h1>
+  <div class="sess" id="sess"></div>
+  <button class="big" id="shoot" type="button">📷 Take photo</button>
+  <button class="small" id="pick" type="button">🖼️ Choose from gallery</button>
+  <input id="cam" type="file" accept="image/*" capture="environment">
+  <input id="gal" type="file" accept="image/*">
+  <div class="status" id="status">Point the camera at the whole drawing, in good light.</div>
+  <img class="prev" id="prev" alt="">
+  <ul class="list" id="sent"></ul>
+  <p class="hint">Tip: in the browser menu, "Add to Home screen" — next time it opens directly, no QR code needed.</p>
+</main>
+<script>
+// Phone page of the EngiCore photo flow (proof of concept). No library: plain calls to the Supabase REST and Storage APIs.
+// The session code comes from the QR code (?s=...). The photo goes to storage bucket "photos" at <session>/<time>.jpg and one row
+// is added to table "photos"; the EngiCore on the PC watches that table for its own session code.
+const SB_URL='https://hwxzyqmyodbpjgymmvnq.supabase.co';
+const SB_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imh3eHp5cW15b2RicGpneW1tdm5xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTQwNzgyNTMsImV4cCI6MjEwOTY1NDI1M30.jF7sY8f8wR0sjxJsmE4MuvnZyMGnj_fGtWdlAYdKHE4';
+const $=id=>document.getElementById(id);
+const store={get(k){try{return localStorage.getItem(k)}catch(e){return null}},set(k,v){try{localStorage.setItem(k,v)}catch(e){}}};
+let session=(new URLSearchParams(location.search).get('s')||'').trim();
+if(session)store.set('xc_session',session);else session=store.get('xc_session')||'';
+const okSession=/^[A-Za-z0-9_-]{8,64}$/.test(session);
+$('sess').textContent=okSession?'Session: '+session:'No session: open this page from the EngiCore QR code.';
+for(const b of ['shoot','pick'])$(b).disabled=!okSession;
+const say=(t,k)=>{const s=$('status');s.textContent=t;s.className='status'+(k?' '+k:'');};
+if(!okSession)say('Open this page from the QR code shown by the EngiCore on the computer.','err');
+$('shoot').onclick=()=>$('cam').click();
+$('pick').onclick=()=>$('gal').click();
+$('cam').onchange=e=>send(e.target.files[0],e.target);
+$('gal').onchange=e=>send(e.target.files[0],e.target);
+// smaller photo = faster upload; 2000 px on the long side is plenty to read a P&ID
+function shrink(file){return new Promise((ok,bad)=>{const url=URL.createObjectURL(file),img=new Image();
+  img.onload=()=>{const k=Math.min(1,2000/Math.max(img.naturalWidth,img.naturalHeight)),c=document.createElement('canvas');
+    c.width=Math.round(img.naturalWidth*k);c.height=Math.round(img.naturalHeight*k);c.getContext('2d').drawImage(img,0,0,c.width,c.height);
+    URL.revokeObjectURL(url);c.toBlob(b=>b?ok(b):bad(new Error('could not prepare the photo')),'image/jpeg',0.85);};
+  img.onerror=()=>{URL.revokeObjectURL(url);bad(new Error('the file is not an image'));};img.src=url;});}
+async function send(file,input){if(!file||!okSession)return;input.value='';
+  const t0=performance.now();say('Preparing the photo…');
+  try{const blob=await shrink(file);const pv=$('prev');pv.src=URL.createObjectURL(blob);pv.style.display='block';
+    const stamp=new Date().toISOString().replace(/[:.]/g,'-'),path=`${session}/${stamp}.jpg`;
+    say(`Uploading ${(blob.size/1048576).toFixed(1)} MB…`);
+    let r=await fetch(`${SB_URL}/storage/v1/object/photos/${encodeURI(path)}`,{method:'POST',headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY,'Content-Type':'image/jpeg','x-upsert':'false'},body:blob});
+    if(!r.ok)throw new Error('photo upload: '+r.status+' '+(await r.text()).slice(0,160));
+    r=await fetch(`${SB_URL}/rest/v1/photos`,{method:'POST',headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY,'Content-Type':'application/json',Prefer:'return=minimal'},body:JSON.stringify({session,path})});
+    if(!r.ok)throw new Error('notifying the EngiCore: '+r.status+' '+(await r.text()).slice(0,160));
+    const s=((performance.now()-t0)/1000).toFixed(1);say(`✓ Sent in ${s} s. You can take another one.`,'ok');
+    const li=document.createElement('li');li.textContent=new Date().toLocaleTimeString()+' · '+(blob.size/1048576).toFixed(1)+' MB · '+s+' s';$('sent').prepend(li);
+  }catch(e){say('✗ Not sent: '+e.message,'err');}}
+</script>
+</body>
+</html>
